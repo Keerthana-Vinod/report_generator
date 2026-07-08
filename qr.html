@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Web Authentication</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/davidshimjs-qrcodejs@0.0.2/qrcode.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: radial-gradient(circle at top right, #1f1235 0%, #0f0a1c 60%, #07050e 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+        body::before {
+            content: '';
+            position: absolute;
+            width: 400px;
+            height: 400px;
+            background: linear-gradient(135deg, #a78bfa, #6366f1);
+            border-radius: 50%;
+            filter: blur(120px);
+            opacity: 0.15;
+            top: 20%;
+            left: 20%;
+            z-index: 0;
+            animation: floatGlow 10s ease-in-out infinite alternate;
+        }
+        @keyframes floatGlow {
+            0% { transform: translate(0, 0) scale(1); }
+            100% { transform: translate(50px, 30px) scale(1.1); }
+        }
+        .container {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            max-width: 480px;
+            padding: 40px 30px;
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 24px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            animation: fadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        h1 {
+            font-size: 28px;
+            font-weight: 800;
+            background: linear-gradient(135deg, #ffffff 30%, #a78bfa 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 8px;
+            letter-spacing: -0.5px;
+        }
+        p.subtitle {
+            font-size: 15px;
+            color: #94a3b8;
+            margin-bottom: 30px;
+            font-weight: 300;
+        }
+        .qr-wrapper {
+            background: #ffffff;
+            padding: 24px;
+            border-radius: 20px;
+            display: inline-block;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+            transition: transform 0.3s ease;
+            position: relative;
+        }
+        .qr-wrapper:hover {
+            transform: scale(1.02);
+        }
+        #qrcode {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 220px;
+            height: 220px;
+            color: #0f172a;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .status-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 30px;
+            font-size: 13px;
+            color: #cbd5e1;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 8px 16px;
+            border-radius: 50px;
+            display: inline-flex;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #f59e0b;
+            border-radius: 50%;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 0.6; }
+            50% { transform: scale(1.2); opacity: 1; }
+            100% { transform: scale(0.9); opacity: 0.6; }
+        }
+        .instructions {
+            margin-top: 30px;
+            text-align: left;
+            background: rgba(255, 255, 255, 0.02);
+            padding: 20px;
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.04);
+        }
+        .instructions h3 {
+            font-size: 14px;
+            color: #a78bfa;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+        .instructions ol {
+            padding-left: 20px;
+            font-size: 13px;
+            color: #94a3b8;
+            line-height: 1.6;
+        }
+        .instructions li {
+            margin-bottom: 6px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Link WhatsApp Service</h1>
+        <p class="subtitle">Scan to authenticate the automation backend</p>
+
+        <div class="qr-wrapper">
+            <div id="qrcode">Loading...</div>
+        </div>
+
+        <div>
+            <div class="status-container">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="status-text">Connecting to local server...</span>
+            </div>
+        </div>
+
+        <div class="instructions">
+            <h3>Instructions</h3>
+            <ol>
+                <li>Open WhatsApp on your phone.</li>
+                <li>Tap <b>Menu</b> or <b>Settings</b> and select <b>Linked Devices</b>.</li>
+                <li>Tap on <b>Link a Device</b>.</li>
+                <li>Point your phone to this screen to capture the code.</li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        let currentQR = "";
+        let qrCodeObj = null;
+
+        const loadQR = () => {
+            const script = document.createElement('script');
+            script.src = 'qr.js?t=' + new Date().getTime();
+            script.onload = () => {
+                const qrText = window.qrData;
+                const statusDot = document.getElementById('status-dot');
+                const statusText = document.getElementById('status-text');
+
+                if (qrText && qrText !== currentQR) {
+                    currentQR = qrText;
+                    document.getElementById('qrcode').innerHTML = '';
+                    qrCodeObj = new QRCode(document.getElementById('qrcode'), {
+                        text: qrText,
+                        width: 220,
+                        height: 220,
+                        colorDark: "#0f172a",
+                        colorLight: "#ffffff",
+                        correctLevel: QRCode.CorrectLevel.H
+                    });
+                    statusDot.style.backgroundColor = "#10b981";
+                    statusText.textContent = "Ready to scan";
+                } else if (!qrText) {
+                    currentQR = "";
+                    document.getElementById('qrcode').innerHTML = 'Waiting for backend...';
+                    statusDot.style.backgroundColor = "#ef4444";
+                    statusText.textContent = "Disconnected or authenticated";
+                }
+            };
+            script.onerror = () => {
+                const statusDot = document.getElementById('status-dot');
+                const statusText = document.getElementById('status-text');
+                statusDot.style.backgroundColor = "#ef4444";
+                statusText.textContent = "Cannot load qr.js (make sure npm start is running)";
+            };
+            document.body.appendChild(script);
+            setTimeout(() => {
+                document.body.removeChild(script);
+            }, 1000);
+        };
+
+        loadQR();
+        setInterval(loadQR, 3000);
+    </script>
+</body>
+</html>
