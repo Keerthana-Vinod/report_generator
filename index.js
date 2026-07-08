@@ -46,6 +46,38 @@ const parseTasks = (text) => {
   return tasks;
 };
 
+const parseStatusCommand = (body) => {
+  const clean = body.trim();
+  
+  // 1. Try to match: progress <num> <pct> or <num>. <pct>% or <num> <pct>% or progress <num> <pct>%
+  const progressRegex = /^(?:progress\s+(\d+)\s+(\d+)|(\d+)(?:\.|\s+)\s*(?:progress\s+)?(\d+))%?$/i;
+  const progressMatch = clean.match(progressRegex);
+  if (progressMatch) {
+    const taskNum = parseInt(progressMatch[1] || progressMatch[3], 10);
+    const percent = parseInt(progressMatch[2] || progressMatch[4], 10);
+    return { type: 'progress', taskNum, percent };
+  }
+
+  // 2. Try to match: blocked <num> <reason> or <num>. blocked <reason> or <num> blocked <reason>
+  const blockedRegex = /^(?:blocked\s+(\d+)\s+(.+)|(\d+)(?:\.|\s+)\s*blocked\s+(.+))$/i;
+  const blockedMatch = clean.match(blockedRegex);
+  if (blockedMatch) {
+    const taskNum = parseInt(blockedMatch[1] || blockedMatch[3], 10);
+    const reason = (blockedMatch[2] || blockedMatch[4]).trim();
+    return { type: 'blocked', taskNum, reason };
+  }
+
+  // 3. Try to match: review <num> or <num>. review or <num> review
+  const reviewRegex = /^(?:review\s+(\d+)|(\d+)(?:\.|\s+)\s*review)$/i;
+  const reviewMatch = clean.match(reviewRegex);
+  if (reviewMatch) {
+    const taskNum = parseInt(reviewMatch[1] || reviewMatch[2], 10);
+    return { type: 'review', taskNum };
+  }
+
+  return null;
+};
+
 const extractNameFromMessage = (body) => {
   const firstTaskIndex = body.search(/(?:^|\s)1[\.\)]/);
   let textBeforeTasks = body;
@@ -269,9 +301,16 @@ client.on('disconnected', (reason) => {
   client.initialize().catch(err => console.error('Failed to re-initialize:', err));
 });
 
+const startupTime = Math.floor(Date.now() / 1000);
+
 client.on('message_create', async (msg) => {
   console.log(`Msg event: fromMe=${msg.fromMe}, body=${msg.body ? msg.body.substring(0, 30) : 'empty'}`);
   if (!msg.body) return;
+
+  // Ignore messages older than 2 minutes ago to prevent historical sync duplication on startup
+  if (msg.timestamp < startupTime - 120) {
+    return;
+  }
 
   try {
     const chat = await msg.getChat();
@@ -281,6 +320,89 @@ client.on('message_create', async (msg) => {
 
     // Prevent bot from replying to its own status/poll messages
     if (msg.fromMe && msg.body.includes('📋')) return;
+
+    // Check if it's a progress update, blocked task, or review command first
+    const statusCmd = parseStatusCommand(msg.body);
+
+    if (statusCmd) {
+      const senderId = msg.author || (msg.fromMe ? client.info.wid._serialized : msg.from);
+      const contact = await msg.getContact();
+      const senderName = (contact.pushname || contact.name || '').toLowerCase();
+      const senderShort = (senderId.split('@')[0]).toLowerCase();
+
+      const todayStr = getLocalDateString(0);
+      // Find polls in the group created today
+      const groupPolls = Object.values(db.polls).filter(p => p.chatId === msg.from && p.date === todayStr);
+
+      // Filter group polls that belong to this sender
+      const userPolls = groupPolls.filter(p => {
+        if (p.authorId === senderId) return true;
+        const authorLower = p.authorName.toLowerCase();
+        if (senderName && authorLower.includes(senderName)) return true;
+        if (authorLower.includes(senderShort)) return true;
+        return false;
+      });
+
+      // Prefer polls where authorName matches the sender name/short
+      userPolls.sort((a, b) => {
+        const aMatch = (senderName && a.authorName.toLowerCase().includes(senderName)) || a.authorName.toLowerCase().includes(senderShort);
+        const bMatch = (senderName && b.authorName.toLowerCase().includes(senderName)) || b.authorName.toLowerCase().includes(senderShort);
+        if (aMatch && !bMatch) return -1;
+        if (!aMatch && bMatch) return 1;
+        return 0;
+      });
+
+      if (userPolls.length === 0) {
+        await msg.reply("❌ No active task poll found for you today in this group.");
+        return;
+      }
+
+      // Helper function to resolve overall task index across all user's polls today
+      const resolveTaskByOverallNumber = (pollsList, overallNumber) => {
+        let currentCount = 0;
+        for (const poll of pollsList) {
+          if (overallNumber > currentCount && overallNumber <= currentCount + poll.tasks.length) {
+            const localIndex = overallNumber - currentCount - 1;
+            return { poll, localIndex };
+          }
+          currentCount += poll.tasks.length;
+        }
+        return null;
+      };
+
+      const resolved = resolveTaskByOverallNumber(userPolls, statusCmd.taskNum);
+
+      if (!resolved) {
+        const totalTasksCount = userPolls.reduce((acc, p) => acc + p.tasks.length, 0);
+        await msg.reply(`❌ Invalid task number. Please specify a number between 1 and ${totalTasksCount}.`);
+        return;
+      }
+
+      const { poll, localIndex } = resolved;
+      const task = poll.tasks[localIndex];
+
+      if (statusCmd.type === 'progress') {
+        if (statusCmd.percent < 0 || statusCmd.percent > 100) {
+          await msg.reply("❌ Progress percentage must be between 0 and 100.");
+          return;
+        }
+        task.status = 'progress';
+        task.percent = statusCmd.percent;
+        task.completed = (statusCmd.percent === 100);
+        await msg.reply(`🟡 Updated task ${statusCmd.taskNum} progress to ${statusCmd.percent}%.`);
+      } else if (statusCmd.type === 'blocked') {
+        task.status = 'blocked';
+        task.reason = statusCmd.reason;
+        task.completed = false;
+        await msg.reply(`🟠 Marked task ${statusCmd.taskNum} as blocked: "${statusCmd.reason}".`);
+      } else if (statusCmd.type === 'review') {
+        task.status = 'review';
+        task.percent = 100;
+        task.completed = true;
+        await msg.reply(`🔵 Marked task ${statusCmd.taskNum} as under review.`);
+      }
+      return;
+    }
 
     const tasks = parseTasks(msg.body);
     console.log(`Parsed tasks: ${tasks.length}`, tasks);
@@ -297,94 +419,6 @@ client.on('message_create', async (msg) => {
         const targetDate = getLocalDateString(offset);
         const report = await generateDailyReport(msg.from, targetDate);
         await msg.reply(report);
-        return;
-      }
-
-      // Check if it's a progress update, blocked task, or review command
-      const progressMatch = msg.body.match(/^\s*[!/]?progress\s+(\d+)\s+(\d+)%?\s*$/i);
-      const blockedMatch = msg.body.match(/^\s*[!/]?blocked\s+(\d+)\s+(.+)$/i);
-      const reviewMatch = msg.body.match(/^\s*[!/]?review\s+(\d+)\s*$/i);
-
-      if (progressMatch || blockedMatch || reviewMatch) {
-        const senderId = msg.author || (msg.fromMe ? client.info.wid._serialized : msg.from);
-        const contact = await msg.getContact();
-        const senderName = (contact.pushname || contact.name || '').toLowerCase();
-        const senderShort = (senderId.split('@')[0]).toLowerCase();
-
-        const todayStr = getLocalDateString(0);
-        // Find polls in the group created today
-        const groupPolls = Object.values(db.polls).filter(p => p.chatId === msg.from && p.date === todayStr);
-
-        // Filter group polls that belong to this sender
-        const userPolls = groupPolls.filter(p => {
-          if (p.authorId === senderId) return true;
-          const authorLower = p.authorName.toLowerCase();
-          if (senderName && authorLower.includes(senderName)) return true;
-          if (authorLower.includes(senderShort)) return true;
-          return false;
-        });
-
-        // Prefer polls where authorName matches the sender name/short
-        userPolls.sort((a, b) => {
-          const aMatch = (senderName && a.authorName.toLowerCase().includes(senderName)) || a.authorName.toLowerCase().includes(senderShort);
-          const bMatch = (senderName && b.authorName.toLowerCase().includes(senderName)) || b.authorName.toLowerCase().includes(senderShort);
-          if (aMatch && !bMatch) return -1;
-          if (!aMatch && bMatch) return 1;
-          return 0;
-        });
-
-        if (userPolls.length === 0) {
-          await msg.reply("❌ No active task poll found for you today in this group.");
-          return;
-        }
-
-        // Helper function to resolve overall task index across all user's polls today
-        const resolveTaskByOverallNumber = (pollsList, overallNumber) => {
-          let currentCount = 0;
-          for (const poll of pollsList) {
-            if (overallNumber > currentCount && overallNumber <= currentCount + poll.tasks.length) {
-              const localIndex = overallNumber - currentCount - 1;
-              return { poll, localIndex };
-            }
-            currentCount += poll.tasks.length;
-          }
-          return null;
-        };
-
-        const overallNumber = parseInt(progressMatch ? progressMatch[1] : (blockedMatch ? blockedMatch[1] : reviewMatch[1]), 10);
-        const resolved = resolveTaskByOverallNumber(userPolls, overallNumber);
-
-        if (!resolved) {
-          const totalTasksCount = userPolls.reduce((acc, p) => acc + p.tasks.length, 0);
-          await msg.reply(`❌ Invalid task number. Please specify a number between 1 and ${totalTasksCount}.`);
-          return;
-        }
-
-        const { poll, localIndex } = resolved;
-        const task = poll.tasks[localIndex];
-
-        if (progressMatch) {
-          const percent = parseInt(progressMatch[2], 10);
-          if (percent < 0 || percent > 100) {
-            await msg.reply("❌ Progress percentage must be between 0 and 100.");
-            return;
-          }
-          task.status = 'progress';
-          task.percent = percent;
-          task.completed = (percent === 100);
-          await msg.reply(`🟡 Updated task ${overallNumber} progress to ${percent}%.`);
-        } else if (blockedMatch) {
-          const reason = blockedMatch[2].trim();
-          task.status = 'blocked';
-          task.reason = reason;
-          task.completed = false;
-          await msg.reply(`🟠 Marked task ${overallNumber} as blocked: "${reason}".`);
-        } else if (reviewMatch) {
-          task.status = 'review';
-          task.percent = 100;
-          task.completed = true;
-          await msg.reply(`🔵 Marked task ${overallNumber} as under review.`);
-        }
       }
       return;
     }
@@ -398,6 +432,14 @@ client.on('message_create', async (msg) => {
 
     const extractedName = extractNameFromMessage(msg.body);
     const displayName = extractedName || authorName;
+
+    // Delete existing polls for this user on this date to prevent duplicates
+    for (const pollId of Object.keys(db.polls)) {
+      const p = db.polls[pollId];
+      if (p.authorId === authorId && p.date === targetDate && p.chatId === msg.from) {
+        delete db.polls[pollId];
+      }
+    }
 
     const maxOptions = 10;
     const pollChunks = [];
